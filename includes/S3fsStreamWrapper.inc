@@ -704,6 +704,13 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
       // will get PermissionDenied errors, and torrent URLs won't work.
       $options[$this->protocol]['ACL'] = 'public-read';
     }
+    else {
+      // The default stream context is process-wide and merges rather than
+      // replaces on each write, so a stale 'public-read' ACL from an earlier
+      // public file must be explicitly overridden here, or private files
+      // written afterwards in the same process inherit it.
+      $options[$this->protocol]['ACL'] = 'private';
+    }
     // Set the Cache-Control header, if the user specified one.
     if (!empty($this->config->get('s3fs_cache_control_header'))) {
       $options[$this->protocol]['CacheControl'] = $this->config->get('s3fs_cache_control_header');
@@ -973,9 +980,25 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     $this->_prevent_cross_scheme_access($from_path);
     $this->_prevent_cross_scheme_access($to_path);
 
-    // Set access for new item in stream context.
-    if (file_uri_scheme($from_path) != 'private' && empty($this->config->get('s3fs_disable_acl'))) {
+    // Set access for new item in stream context. The default context is
+    // process-wide and merges rather than replaces, so the ACL must be set
+    // explicitly, based on the destination scheme, for every branch below,
+    // or a stale ACL from an earlier write leaks onto this rename.
+    if (!empty($this->config->get('s3fs_disable_acl'))) {
+      // Don't set any ACL.
+    }
+    elseif (!empty($this->config->get('s3fs_use_cname')) && !empty
+      ($this->config->get('s3fs_domain')) && !empty
+      ($this->config->get('s3fs_domain_s3_private'))) {
+      // When all content is being routed through an edge service, access
+      // via S3 should be blocked.
+      stream_context_set_option($this->context, 's3', 'ACL', 'private');
+    }
+    elseif (file_uri_scheme($to_path) != 'private') {
       stream_context_set_option($this->context, 's3', 'ACL', 'public-read');
+    }
+    else {
+      stream_context_set_option($this->context, 's3', 'ACL', 'private');
     }
 
     // If parent succeeds in renaming, updated local metadata and cache.
