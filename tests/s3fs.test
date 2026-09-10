@@ -67,7 +67,7 @@ class S3fsTests extends BackdropWebTestCase {
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
         $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
       $test_uri1 = "{$this->remote_tests_folder_uri}/test_file.txt";
@@ -126,6 +126,95 @@ class S3fsTests extends BackdropWebTestCase {
     }
 
     /**
+     * Regression test for rename() deriving its ACL from the destination
+     * scheme, not the source scheme (a private->public or public->private
+     * rename must not inherit a stale ACL left in the shared stream
+     * context by an earlier write).
+     */
+    public function testRenameCrossSchemeAcl() {
+      if ($this->bucket_not_found) {
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
+        return;
+      }
+
+      if (!empty($this->config['disable_acl'])) {
+        // Buckets using the "bucket owner enforced" Object Ownership setting
+        // reject any request that includes an ACL, so this ACL-specific
+        // regression test doesn't apply when the site has ACLs disabled.
+        $this->pass('s3fs_disable_acl is enabled; skipping ACL-specific rename regression test.');
+        return;
+      }
+
+      $public_folder = !empty($this->config['public_folder']) ? $this->config['public_folder'] : 's3fs-public';
+      $private_folder = !empty($this->config['private_folder']) ? $this->config['private_folder'] : 's3fs-private';
+      $root_prefix = !empty($this->config['root_folder']) ? $this->config['root_folder'] . '/' : '';
+
+      $rel_path = $this->remote_tests_folder . '/acl_test.txt';
+      $public_key = $root_prefix . $public_folder . '/' . $rel_path;
+      $private_key = $root_prefix . $private_folder . '/' . $rel_path;
+      $from_uri = "public://{$rel_path}";
+      $to_uri = "private://{$rel_path}";
+
+      // Seed the source object directly in S3.
+      $this->s3->putObject(array(
+        'Bucket' => $this->config['bucket'],
+        'Key' => $public_key,
+        'Body' => 'acl regression test',
+        'ACL' => 'public-read',
+      ));
+
+      // Use the process-wide default context, and prime it with a stale ACL
+      // the way stream_flush() leaves it after an earlier public write, to
+      // reproduce the condition the original bug depended on.
+      $default_context = stream_context_get_default();
+      stream_context_set_option($default_context, 's3', 'ACL', 'public-read');
+
+      $wrapper = new S3fsStreamWrapper();
+      $wrapper->context = $default_context;
+
+      try {
+        // Cross-scheme rename: public -> private. Must end up private even
+        // though the stale context ACL is 'public-read'.
+        $this->assertTrue($wrapper->rename($from_uri, $to_uri), 'Renamed the public file to a private destination.');
+        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+        $this->assertFalse($this->_acl_grants_public_read($acl), 'The public-to-private rename produced a private ACL, not public-read.');
+
+        // Prime the context with a stale 'private' ACL before renaming back,
+        // to prove the opposite direction isn't fooled by leftover state.
+        stream_context_set_option($default_context, 's3', 'ACL', 'private');
+
+        // Cross-scheme rename: private -> public. Must end up public-read
+        // even though the stale context ACL is 'private'.
+        $this->assertTrue($wrapper->rename($to_uri, $from_uri), 'Renamed the private file back to a public destination.');
+        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $public_key));
+        $this->assertTrue($this->_acl_grants_public_read($acl), 'The private-to-public rename produced a public-read ACL.');
+      }
+      catch (\Exception $e) {
+        $this->fail('Unexpected exception during cross-scheme rename ACL test: ' . $e->getMessage());
+      }
+
+      // Clean up. These objects live outside remote_tests_folder_key (which
+      // only covers the s3:// scheme's key layout), so they need explicit
+      // removal here rather than relying on tearDown().
+      $this->s3->deleteMatchingObjects($this->config['bucket'], $public_key);
+      $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+    }
+
+    /**
+     * Helper: does an S3 GetObjectAcl result grant read to the AllUsers
+     * group (i.e. is the object effectively public-read)?
+     */
+    protected function _acl_grants_public_read($acl) {
+      foreach ($acl['Grants'] as $grant) {
+        if (!empty($grant['Grantee']['URI']) && strpos($grant['Grantee']['URI'], '/groups/global/AllUsers') !== FALSE) {
+          return TRUE;
+        }
+      }
+      return FALSE;
+    }
+
+    /**
      * Test the image derivative functionality.
      */
     public function testImageDerivatives() {
@@ -133,7 +222,7 @@ class S3fsTests extends BackdropWebTestCase {
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
         $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
       $img_uri1 = "{$this->remote_tests_folder_uri}/test.png";
@@ -229,7 +318,7 @@ class S3fsTests extends BackdropWebTestCase {
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
         $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
 
