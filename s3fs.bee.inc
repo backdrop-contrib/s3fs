@@ -29,7 +29,7 @@ function s3fs_bee_command() {
  * Refreshes the file metadata cache.
  */
 function bee_s3fs_refresh_cache() {
-  $config = config_get('s3fs.settings');
+  $config = config('s3fs.settings');
   if (!_s3fs_validate_config($config)) {
     bee_message(
       bt('Unable to validate your s3fs configuration settings. Please configure S3 File System from the admin/config/media/s3fs page and try again.'),
@@ -45,7 +45,7 @@ function bee_s3fs_refresh_cache() {
  * if s3fs is configured to take over those systems.
  */
 function bee_s3fs_copy_local() {
-  $config = config_get('s3fs.settings');
+  $config = config('s3fs.settings');
 
  if (!_s3fs_validate_config($config)) {
     bee_message(
@@ -54,7 +54,7 @@ function bee_s3fs_copy_local() {
     );
     return; }
 
-  if (empty($config['s3fs_use_s3_for_public']) && empty($config['s3fs_use_s3_for_private'])) {
+  if (empty($config->get('s3fs_use_s3_for_public')) && empty($config->get('s3fs_use_s3_for_private'))) {
     bee_message(
       bt('S3 File System is not configured to take over any other file systems.')
     );
@@ -62,10 +62,10 @@ function bee_s3fs_copy_local() {
   }
 
 
-  if (!empty($config['s3fs_use_s3_for_public'])) {
+  if (!empty($config->get('s3fs_use_s3_for_public'))) {
     _s3fs_copy_file_system_to_s3('public');
   }
-  if (!empty($config['s3fs_use_s3_for_private'])) {
+  if (!empty($config->get('s3fs_use_s3_for_private'))) {
     _s3fs_copy_file_system_to_s3('private');
   }
 }
