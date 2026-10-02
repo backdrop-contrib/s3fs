@@ -681,8 +681,10 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
    * @see http://php.net/manual/en/streamwrapper.stream-flush.php
    */
   public function stream_flush() {
-    // Prepare upload parameters.
-    $options = $this->getOptions();
+    // Prepare upload parameters. These are built fresh for every upload and
+    // never read back from the stream context, so nothing set for an earlier
+    // file (by s3fs or by hook_s3fs_upload_params_alter()) can carry over.
+    $options = array($this->protocol => array());
 
     $options[$this->protocol]['ContentType'] = $this->getMimeType($this->uri);
 
@@ -705,10 +707,6 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
       $options[$this->protocol]['ACL'] = 'public-read';
     }
     else {
-      // The default stream context is process-wide and merges rather than
-      // replaces on each write, so a stale 'public-read' ACL from an earlier
-      // public file must be explicitly overridden here, or private files
-      // written afterwards in the same process inherit it.
       $options[$this->protocol]['ACL'] = 'private';
     }
     // Set the Cache-Control header, if the user specified one.
@@ -734,9 +732,11 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     unset($options[$this->protocol]['Bucket']);
     unset($options[$this->protocol]['Key']);
 
-    stream_context_set_option($this->context, $options);
+    $flushed = $this->withOperationContext($options[$this->protocol], function () {
+      return parent::stream_flush();
+    });
 
-    if (parent::stream_flush()) {
+    if ($flushed) {
       $this->writeUriToCache($this->uri);
       return TRUE;
     }
@@ -980,10 +980,8 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     $this->_prevent_cross_scheme_access($from_path);
     $this->_prevent_cross_scheme_access($to_path);
 
-    // Set access for new item in stream context. The default context is
-    // process-wide and merges rather than replaces, so the ACL must be set
-    // explicitly, based on the destination scheme, for every branch below,
-    // or a stale ACL from an earlier write leaks onto this rename.
+    // Set access for the new item, based on the destination scheme.
+    $params = array();
     if (!empty($this->config->get('s3fs_disable_acl'))) {
       // Don't set any ACL.
     }
@@ -992,17 +990,28 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
       ($this->config->get('s3fs_domain_s3_private'))) {
       // When all content is being routed through an edge service, access
       // via S3 should be blocked.
-      stream_context_set_option($this->context, 's3', 'ACL', 'private');
+      $params['ACL'] = 'private';
     }
     elseif (file_uri_scheme($to_path) != 'private') {
-      stream_context_set_option($this->context, 's3', 'ACL', 'public-read');
+      $params['ACL'] = 'public-read';
     }
     else {
-      stream_context_set_option($this->context, 's3', 'ACL', 'private');
+      $params['ACL'] = 'private';
     }
 
+    // Keep the copy encrypted the same way stream_flush() would.
+    if (!empty($this->config->get('s3fs_encryption'))) {
+      $params['ServerSideEncryption'] = $this->config->get('s3fs_encryption');
+    }
+
+    $from_key = $this->convertUriToKeyedPath($from_path);
+    $to_key = $this->convertUriToKeyedPath($to_path);
+    $renamed = $this->withOperationContext($params, function () use ($from_key, $to_key) {
+      return parent::rename($from_key, $to_key);
+    });
+
     // If parent succeeds in renaming, updated local metadata and cache.
-    if (parent::rename($this->convertUriToKeyedPath($from_path), $this->convertUriToKeyedPath($to_path))) {
+    if ($renamed) {
       $metadata = $this->_read_cache($from_path);
       if ($metadata) {
         $metadata['uri'] = $to_path;
@@ -1250,6 +1259,36 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     }
     $delete_query->condition($or);
     return $delete_query->execute();
+  }
+
+  /**
+   * Runs a parent StreamWrapper operation with its own stream context.
+   *
+   * PHP's default stream context is shared by every stream in the process,
+   * and stream_context_set_option() merges into it rather than replacing it.
+   * Per-file parameters (ACL, Cache-Control, encryption, grants, or anything
+   * added by hook_s3fs_upload_params_alter()) written there would silently
+   * apply to every later write in the same process. Instead, they are passed
+   * in a fresh context for just this operation. The AWS SDK still merges in
+   * the default context underneath, which supplies the client and cache.
+   *
+   * @param array $params
+   *   S3 request parameters for this operation only.
+   * @param callable $operation
+   *   The operation to run, typically a call to a parent:: method.
+   *
+   * @return mixed
+   *   The return value of $operation.
+   */
+  protected function withOperationContext(array $params, callable $operation) {
+    $context = $this->context;
+    $this->context = stream_context_create(array($this->protocol => $params));
+    try {
+      return $operation();
+    }
+    finally {
+      $this->context = $context;
+    }
   }
 
   /**

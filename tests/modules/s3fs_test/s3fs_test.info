@@ -1,0 +1,7 @@
+name = S3 File System Test
+description = Support module for S3 File System tests.
+package = Testing
+type = module
+backdrop = 1.x
+hidden = TRUE
+dependencies[] = s3fs

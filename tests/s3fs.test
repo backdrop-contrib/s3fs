@@ -4,7 +4,8 @@
  * S3 File System integration tests.
  *
  * These tests use Backdrop's native test base and require a configured S3
- * bucket and credentials. No additional test module is required.
+ * bucket and credentials. The hidden s3fs_test module provides an
+ * hook_s3fs_upload_params_alter() implementation for the tests.
  */
 class S3fsTests extends BackdropWebTestCase {
 
@@ -42,7 +43,7 @@ class S3fsTests extends BackdropWebTestCase {
         }
       }
 
-      parent::setUp('s3fs', 'image');
+      parent::setUp('s3fs', 'image', 's3fs_test');
       config('s3fs.settings')->setData($source_config)->save();
       backdrop_static_reset('config');
       // Empty out the bucket before the test, to prevent unexpected errors.
@@ -199,6 +200,57 @@ class S3fsTests extends BackdropWebTestCase {
       // removal here rather than relying on tearDown().
       $this->s3->deleteMatchingObjects($this->config['bucket'], $public_key);
       $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+    }
+
+    /**
+     * Regression test for per-file upload parameters persisting in the shared
+     * default stream context. Parameters set for one upload (by s3fs or by
+     * hook_s3fs_upload_params_alter()) must not apply to later uploads.
+     */
+    public function testUploadParamsDoNotPersist() {
+      if ($this->bucket_not_found) {
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
+        return;
+      }
+
+      $root_prefix = !empty($this->config['root_folder']) ? $this->config['root_folder'] . '/' : '';
+      $tagged_uri = "{$this->remote_tests_folder_uri}/hook_tagged.txt";
+      $plain_uri = "{$this->remote_tests_folder_uri}/plain.txt";
+      $plain_key = "{$this->remote_tests_folder_key}/plain.txt";
+
+      // s3fs_test adds Cache-Control and Metadata to the tagged upload only.
+      $this->assertTrue(file_put_contents($tagged_uri, 'tagged') !== FALSE, 'Uploaded the hook-tagged file.');
+      $this->assertTrue(file_put_contents($plain_uri, 'plain') !== FALSE, 'Uploaded a plain file afterwards.');
+
+      $default_options = stream_context_get_options(stream_context_get_default());
+      $this->assertFalse(isset($default_options['s3']['Metadata']), 'Upload parameters were not written to the default stream context.');
+      $this->assertFalse(isset($default_options['s3']['ACL']), 'The ACL was not written to the default stream context.');
+
+      $head = $this->s3->headObject(array('Bucket' => $this->config['bucket'], 'Key' => $plain_key));
+      $this->assertTrue(empty($head['Metadata']['s3fs-test']), 'Hook-set Metadata did not carry over to the plain file.');
+      if (empty($this->config['cache_control_header'])) {
+        // With no configured header, s3fs never sets Cache-Control itself, so
+        // any value here could only have leaked from the tagged upload.
+        $this->assertTrue(empty($head['CacheControl']), 'Hook-set Cache-Control did not carry over to the plain file.');
+      }
+
+      // A public upload followed by a private one must not leave the private
+      // object public-read.
+      if (!empty($this->config['use_s3_for_private']) && empty($this->config['disable_acl'])) {
+        $private_folder = !empty($this->config['private_folder']) ? $this->config['private_folder'] : 's3fs-private';
+        $rel_path = $this->remote_tests_folder . '/acl_flush_test.txt';
+        $private_key = $root_prefix . $private_folder . '/' . $rel_path;
+
+        $this->assertTrue(file_put_contents("s3://{$this->remote_tests_folder}/public_first.txt", 'public') !== FALSE, 'Uploaded a public-read file first.');
+        $this->assertTrue(file_put_contents("private://{$rel_path}", 'private') !== FALSE, 'Uploaded a private file afterwards.');
+        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+        $this->assertFalse($this->_acl_grants_public_read($acl), 'The private upload did not inherit public-read from the earlier upload.');
+
+        // This object lives outside remote_tests_folder_key, so tearDown()
+        // won't remove it.
+        $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+      }
     }
 
     /**
