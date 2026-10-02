@@ -1001,8 +1001,15 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     // If parent succeeds in renaming, updated local metadata and cache.
     if ($renamed) {
       $metadata = $this->_read_cache($from_path);
-      $metadata['uri'] = $to_path;
-      $this->_write_cache($metadata);
+      if ($metadata) {
+        $metadata['uri'] = $to_path;
+        $this->_write_cache($metadata);
+      }
+      else {
+        // The source file wasn't cached; fetch the metadata of the renamed
+        // object from S3 instead.
+        $this->writeUriToCache($to_path);
+      }
       $this->_delete_cache($from_path);
       clearstatcache(TRUE, $from_path);
       clearstatcache(TRUE, $to_path);
