@@ -695,6 +695,13 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
       // will get PermissionDenied errors, and torrent URLs won't work.
       $options[$this->protocol]['ACL'] = 'public-read';
     }
+    else {
+      // The default stream context is process-wide and merges rather than
+      // replaces on each write, so a stale 'public-read' ACL from an earlier
+      // public file must be explicitly overridden here, or private files
+      // written afterwards in the same process inherit it.
+      $options[$this->protocol]['ACL'] = 'private';
+    }
     // Set the Cache-Control header, if the user specified one.
     if (!empty($this->config->get('s3fs_cache_control_header'))) {
       $options[$this->protocol]['CacheControl'] = config('s3fs.settings')->get('cache_control_header');
@@ -964,9 +971,15 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
     $this->_prevent_cross_scheme_access($from_path);
     $this->_prevent_cross_scheme_access($to_path);
 
-    // Set access for new item in stream context.
+    // Set access for new item in stream context. The default context is
+    // process-wide and merges rather than replaces, so the ACL must be set
+    // explicitly for both branches or a stale 'public-read' from an earlier
+    // public write leaks onto a private rename.
     if (file_uri_scheme($from_path) != 'private') {
       stream_context_set_option($this->context, 's3', 'ACL', 'public-read');
+    }
+    else {
+      stream_context_set_option($this->context, 's3', 'ACL', 'private');
     }
 
     // If parent succeeds in renaming, updated local metadata and cache.
