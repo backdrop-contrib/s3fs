@@ -219,13 +219,17 @@ class S3fsTests extends BackdropWebTestCase {
       $plain_uri = "{$this->remote_tests_folder_uri}/plain.txt";
       $plain_key = "{$this->remote_tests_folder_key}/plain.txt";
 
+      // Snapshot the default context first: earlier tests in this process may
+      // have left options in it deliberately, and they can't be removed.
+      $default_before = stream_context_get_options(stream_context_get_default());
+
       // s3fs_test adds Cache-Control and Metadata to the tagged upload only.
       $this->assertTrue(file_put_contents($tagged_uri, 'tagged') !== FALSE, 'Uploaded the hook-tagged file.');
       $this->assertTrue(file_put_contents($plain_uri, 'plain') !== FALSE, 'Uploaded a plain file afterwards.');
 
-      $default_options = stream_context_get_options(stream_context_get_default());
-      $this->assertFalse(isset($default_options['s3']['Metadata']), 'Upload parameters were not written to the default stream context.');
-      $this->assertFalse(isset($default_options['s3']['ACL']), 'The ACL was not written to the default stream context.');
+      $default_after = stream_context_get_options(stream_context_get_default());
+      unset($default_before['s3']['client'], $default_before['s3']['cache'], $default_after['s3']['client'], $default_after['s3']['cache']);
+      $this->assertIdentical($default_after, $default_before, 'Uploads did not write any parameters to the default stream context.');
 
       $head = $this->s3->headObject(array('Bucket' => $this->config['bucket'], 'Key' => $plain_key));
       $this->assertTrue(empty($head['Metadata']['s3fs-test']), 'Hook-set Metadata did not carry over to the plain file.');
