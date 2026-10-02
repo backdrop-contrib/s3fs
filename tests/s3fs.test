@@ -46,6 +46,11 @@ class S3fsTests extends BackdropWebTestCase {
       parent::setUp('s3fs', 'image', 's3fs_test');
       config('s3fs.settings')->setData($source_config)->save();
       backdrop_static_reset('config');
+      // The stream wrappers were registered during parent::setUp(), before
+      // these settings existed. Re-register them so s3fs takes over public://
+      // and private:// as configured.
+      backdrop_static_reset('file_get_stream_wrappers');
+      file_get_stream_wrappers();
       // Empty out the bucket before the test, to prevent unexpected errors.
       $this->config = _s3fs_get_config(TRUE);
       $this->s3 = _s3fs_get_amazons3_client($this->config);
@@ -247,9 +252,11 @@ class S3fsTests extends BackdropWebTestCase {
         $private_key = $root_prefix . $private_folder . '/' . $rel_path;
 
         $this->assertTrue(file_put_contents("s3://{$this->remote_tests_folder}/public_first.txt", 'public') !== FALSE, 'Uploaded a public-read file first.');
-        $this->assertTrue(file_put_contents("private://{$rel_path}", 'private') !== FALSE, 'Uploaded a private file afterwards.');
-        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
-        $this->assertFalse($this->_acl_grants_public_read($acl), 'The private upload did not inherit public-read from the earlier upload.');
+        $this->assertEqual(file_stream_wrapper_get_class('private'), 'S3fsStreamWrapper', 'private:// is handled by S3fsStreamWrapper.');
+        if ($this->assertTrue(file_put_contents("private://{$rel_path}", 'private') !== FALSE, 'Uploaded a private file afterwards.')) {
+          $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+          $this->assertFalse($this->_acl_grants_public_read($acl), 'The private upload did not inherit public-read from the earlier upload.');
+        }
 
         // This object lives outside remote_tests_folder_key, so tearDown()
         // won't remove it.
