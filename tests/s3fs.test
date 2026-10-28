@@ -1,27 +1,20 @@
 <?php
 
-// Only define the S3fsTests class if the SimpleTest Clone module is installed.
-if (!module_exists('simpletest_clone')) {
-  $t = get_t();
-  $link = 'https://www.drupal.org/project/simpletest_clone';
-  drupal_set_message($t('S3 File System tests require the <a href="!link">SimpleTest Clone</a> module. You will not see this message again until you clear the cache.', array(
-    '!link' => $link,
-  )), 'warning');
-  watchdog('s3fs', 'S3 File System tests require the SimpleTest Clone module. You will not see this message again until you clear the cache.', array(), WATCHDOG_WARNING, l("SimpleTest Clone", $link, array(
-    'absolute' => TRUE,
-  )));
-}
-else {
-  module_load_include('php', 'simpletest_clone', 'simpletest_clone_test_case');
-  // These tests require SimpleTestCloneTestcase because the AWS credentials are
-  // configured in settings.php, which apparently doesn't get executed during a
-  // BackdropWebTestcase.
-  class S3fsTests extends SimpleTestCloneTestcase {
+/**
+ * S3 File System integration tests.
+ *
+ * These tests use Backdrop's native test base and require a configured S3
+ * bucket and credentials. The hidden s3fs_test module provides an
+ * hook_s3fs_upload_params_alter() implementation for the tests.
+ */
+class S3fsTests extends BackdropWebTestCase {
 
     /**
      * State variables.
      */
     protected $bucket_not_found = FALSE;
+    protected $config = array();
+    protected $s3;
     protected $remote_tests_folder = '_s3fs_tests';
     protected $remote_tests_folder_key = '_s3fs_tests';
     protected $remote_tests_folder_uri = 's3://_s3fs_tests';
@@ -35,18 +28,37 @@ else {
     }
 
     function setUp() {
-      parent::setUp('s3fs');
+      // Preserve the real site's S3 settings before SimpleTest switches to its
+      // isolated database. Credentials managed by Key are copied as direct
+      // test-only values into that isolated configuration.
+      $source_config = config('s3fs.settings')->get();
+      if (module_exists('key')) {
+        $access_key_name = !empty($source_config['keymodule_access_key_name']) ? $source_config['keymodule_access_key_name'] : NULL;
+        $secret_key_name = !empty($source_config['keymodule_secret_key_name']) ? $source_config['keymodule_secret_key_name'] : NULL;
+        if ($access_key_name) {
+          $source_config['s3fs_awssdk_access_key'] = key_get_key_value($access_key_name);
+        }
+        if ($secret_key_name) {
+          $source_config['s3fs_awssdk_secret_key'] = key_get_key_value($secret_key_name);
+        }
+      }
+
+      parent::setUp('s3fs', 'image', 's3fs_test');
+      config('s3fs.settings')->setData($source_config)->save();
+      backdrop_static_reset('config');
+      // The stream wrappers were registered during parent::setUp(), before
+      // these settings existed. Re-register them so s3fs takes over public://
+      // and private:// as configured.
+      backdrop_static_reset('file_get_stream_wrappers');
+      file_get_stream_wrappers();
       // Empty out the bucket before the test, to prevent unexpected errors.
-      $this->config = _s3fs_get_config();
+      $this->config = $this->_s3fs_settings();
       $this->s3 = _s3fs_get_amazons3_client($this->config);
       if (!empty($this->config['root_folder'])) {
         $this->remote_tests_folder_key = "{$this->config['root_folder']}/$this->remote_tests_folder";
       }
-      // Adding this to ensure it's set.
-      $this->public_files_directory = variable_get('file_public_path');
-      // Prevent issues with derivative tokens during test.
-      variable_set('image_allow_insecure_derivatives', TRUE);
-      $this->bucket_not_found = !$this->s3->doesBucketExist($this->config['bucket']);
+      // Use the non-deprecated V2 existence check supported by AWS SDK v3.
+      $this->bucket_not_found = !$this->s3->doesBucketExistV2($this->config['bucket']);
       if (!$this->bucket_not_found) {
         $this->s3->deleteMatchingObjects($this->config['bucket'], $this->remote_tests_folder_key);
         debug("Deleted file(s) from S3 test folder to prepare for the test.");
@@ -60,8 +72,8 @@ else {
       // This is here, rather than the setUp() function, because we want the
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
-        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->s3_region}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
       $test_uri1 = "{$this->remote_tests_folder_uri}/test_file.txt";
@@ -71,9 +83,9 @@ else {
       $this->assertEqual(file_stream_wrapper_get_class('s3'), 'S3fsStreamWrapper', 'URIs with scheme "s3" should be handled by S3fsStreamWrapper.');
 
       // The test.txt file is enough data to force multiple calls to write_stream().
-      $file_contents = file_get_contents(drupal_get_path('module', 's3fs') . '/tests/test.txt');
+      $file_contents = file_get_contents(backdrop_get_path('module', 's3fs') . '/tests/test.txt');
 
-      $this->assertTrue(drupal_mkdir($this->remote_tests_folder_uri), 'Exercised mkdir to create the testing directory (in the DB).');
+      $this->assertTrue(backdrop_mkdir($this->remote_tests_folder_uri), 'Exercised mkdir to create the testing directory (in the DB).');
       $this->assertTrue(is_dir($this->remote_tests_folder_uri), 'Make sure the folder we just created correctly reports that it is a folder.');
 
       debug("Exercising file upload functionality.");
@@ -83,6 +95,10 @@ else {
       $total = $end_time - $start_time;
       debug("Upload time: $total seconds");
 
+      $this->assertTrue($s3_file, "Uploaded the first test file, $test_uri1.");
+      if (!$s3_file) {
+        return;
+      }
       $this->assertTrue(file_valid_uri($s3_file->uri), "Uploaded the first test file, $test_uri1.");
 
       debug("Exercising file copy functionality.");
@@ -100,18 +116,178 @@ else {
       $this->assertNotIdentical($url, FALSE, 'file_create_url() succeeded.');
 
       debug('Exercising unlink().');
-      $this->assertIdentical(file_delete($s3_file), TRUE, "Deleted the first test file.");
+      file_delete($s3_file->fid);
       $this->assertIdentical(file_exists($test_uri1), FALSE, 'The wrapper reports that the first test file no longer exists.');
 
       debug('Exercising rename().');
       $this->assertTrue(rename($test_uri2, $test_uri1), "Renamed the second test file to the newly-vacated URI of $test_uri1.");
       $s3_file2->uri = $test_uri1;
+      file_save($s3_file2);
 
       debug('Exercising rmdir().');
-      $this->assertFalse(drupal_rmdir($this->remote_tests_folder_uri), 'rmdir() did not delete the tests folder because it is not empty.');
-      $this->assertTrue(file_delete($s3_file2), 'Deleted the last test file.');
-      $this->assertTrue(drupal_rmdir($this->remote_tests_folder_uri), 'Deleted the tests folder.');
+      $this->assertFalse(backdrop_rmdir($this->remote_tests_folder_uri), 'rmdir() did not delete the tests folder because it is not empty.');
+      file_delete($s3_file2->fid);
+      $this->assertTrue(backdrop_rmdir($this->remote_tests_folder_uri), 'Deleted the tests folder.');
       $this->assertFalse(is_dir($this->remote_tests_folder_uri), 'The wrapper reports that the tests folder is gone.');
+    }
+
+    /**
+     * Regression test for rename() deriving its ACL from the destination
+     * scheme, not the source scheme (a private->public or public->private
+     * rename must not inherit a stale ACL left in the shared stream
+     * context by an earlier write).
+     */
+    public function testRenameCrossSchemeAcl() {
+      if ($this->bucket_not_found) {
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
+        return;
+      }
+
+      $public_folder = !empty($this->config['public_folder']) ? $this->config['public_folder'] : 's3fs-public';
+      $private_folder = !empty($this->config['private_folder']) ? $this->config['private_folder'] : 's3fs-private';
+      $root_prefix = !empty($this->config['root_folder']) ? $this->config['root_folder'] . '/' : '';
+
+      $rel_path = $this->remote_tests_folder . '/acl_test.txt';
+      $public_key = $root_prefix . $public_folder . '/' . $rel_path;
+      $private_key = $root_prefix . $private_folder . '/' . $rel_path;
+      $from_uri = "public://{$rel_path}";
+      $to_uri = "private://{$rel_path}";
+
+      // Seed the source object directly in S3.
+      $this->s3->putObject(array(
+        'Bucket' => $this->config['bucket'],
+        'Key' => $public_key,
+        'Body' => 'acl regression test',
+        'ACL' => 'public-read',
+      ));
+
+      // Use the process-wide default context, and prime it with a stale ACL
+      // the way stream_flush() leaves it after an earlier public write, to
+      // reproduce the condition the original bug depended on.
+      $default_context = stream_context_get_default();
+      stream_context_set_option($default_context, 's3', 'ACL', 'public-read');
+
+      $wrapper = new S3fsStreamWrapper();
+      $wrapper->context = $default_context;
+
+      try {
+        // Cross-scheme rename: public -> private. Must end up private even
+        // though the stale context ACL is 'public-read'.
+        $this->assertTrue($wrapper->rename($from_uri, $to_uri), 'Renamed the public file to a private destination.');
+        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+        $this->assertFalse($this->_acl_grants_public_read($acl), 'The public-to-private rename produced a private ACL, not public-read.');
+
+        // Prime the context with a stale 'private' ACL before renaming back,
+        // to prove the opposite direction isn't fooled by leftover state.
+        stream_context_set_option($default_context, 's3', 'ACL', 'private');
+
+        // Cross-scheme rename: private -> public. Must end up public-read
+        // even though the stale context ACL is 'private'.
+        $this->assertTrue($wrapper->rename($to_uri, $from_uri), 'Renamed the private file back to a public destination.');
+        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $public_key));
+        $this->assertTrue($this->_acl_grants_public_read($acl), 'The private-to-public rename produced a public-read ACL.');
+      }
+      catch (\Exception $e) {
+        $this->fail('Unexpected exception during cross-scheme rename ACL test: ' . $e->getMessage());
+      }
+
+      // Clean up. These objects live outside remote_tests_folder_key (which
+      // only covers the s3:// scheme's key layout), so they need explicit
+      // removal here rather than relying on tearDown().
+      $this->s3->deleteMatchingObjects($this->config['bucket'], $public_key);
+      $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+    }
+
+    /**
+     * Regression test for per-file upload parameters persisting in the shared
+     * default stream context. Parameters set for one upload (by s3fs or by
+     * hook_s3fs_upload_params_alter()) must not apply to later uploads.
+     */
+    public function testUploadParamsDoNotPersist() {
+      if ($this->bucket_not_found) {
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
+        return;
+      }
+
+      $root_prefix = !empty($this->config['root_folder']) ? $this->config['root_folder'] . '/' : '';
+      $tagged_uri = "{$this->remote_tests_folder_uri}/hook_tagged.txt";
+      $plain_uri = "{$this->remote_tests_folder_uri}/plain.txt";
+      $plain_key = "{$this->remote_tests_folder_key}/plain.txt";
+
+      // Snapshot the default context first: earlier tests in this process may
+      // have left options in it deliberately, and they can't be removed.
+      $default_before = stream_context_get_options(stream_context_get_default());
+
+      // s3fs_test adds Cache-Control and Metadata to the tagged upload only.
+      $this->assertTrue(file_put_contents($tagged_uri, 'tagged') !== FALSE, 'Uploaded the hook-tagged file.');
+      $this->assertTrue(file_put_contents($plain_uri, 'plain') !== FALSE, 'Uploaded a plain file afterwards.');
+
+      $default_after = stream_context_get_options(stream_context_get_default());
+      unset($default_before['s3']['client'], $default_before['s3']['cache'], $default_after['s3']['client'], $default_after['s3']['cache']);
+      $this->assertIdentical($default_after, $default_before, 'Uploads did not write any parameters to the default stream context.');
+
+      $head = $this->s3->headObject(array('Bucket' => $this->config['bucket'], 'Key' => $plain_key));
+      $this->assertTrue(empty($head['Metadata']['s3fs-test']), 'Hook-set Metadata did not carry over to the plain file.');
+      if (empty($this->config['cache_control_header'])) {
+        // With no configured header, s3fs never sets Cache-Control itself, so
+        // any value here could only have leaked from the tagged upload.
+        $this->assertTrue(empty($head['CacheControl']), 'Hook-set Cache-Control did not carry over to the plain file.');
+      }
+
+      // A public upload followed by a private one must not leave the private
+      // object public-read.
+      if (!empty($this->config['use_s3_for_private'])) {
+        $private_folder = !empty($this->config['private_folder']) ? $this->config['private_folder'] : 's3fs-private';
+        $rel_path = $this->remote_tests_folder . '/acl_flush_test.txt';
+        $private_key = $root_prefix . $private_folder . '/' . $rel_path;
+
+        $this->assertTrue(file_put_contents("s3://{$this->remote_tests_folder}/public_first.txt", 'public') !== FALSE, 'Uploaded a public-read file first.');
+        $this->assertEqual(file_stream_wrapper_get_class('private'), 'S3fsStreamWrapper', 'private:// is handled by S3fsStreamWrapper.');
+        if ($this->assertTrue(file_put_contents("private://{$rel_path}", 'private') !== FALSE, 'Uploaded a private file afterwards.')) {
+          $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+          $this->assertFalse($this->_acl_grants_public_read($acl), 'The private upload did not inherit public-read from the earlier upload.');
+        }
+
+        // This object lives outside remote_tests_folder_key, so tearDown()
+        // won't remove it.
+        $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+      }
+    }
+
+    /**
+     * Helper: the s3fs settings with the "s3fs_" prefix stripped.
+     *
+     * _s3fs_get_config() on this branch reads the legacy global $conf, which
+     * doesn't hold Backdrop config, so read config('s3fs.settings') directly.
+     */
+    protected function _s3fs_settings() {
+      $settings = array();
+      foreach (config('s3fs.settings')->get() as $key => $value) {
+        if (substr($key, 0, 5) == 's3fs_') {
+          $settings[substr($key, 5)] = $value;
+        }
+      }
+      foreach (array('root_folder', 'public_folder', 'private_folder') as $key) {
+        if (!empty($settings[$key])) {
+          $settings[$key] = trim($settings[$key], '\/');
+        }
+      }
+      return $settings;
+    }
+
+    /**
+     * Helper: does an S3 GetObjectAcl result grant read to the AllUsers
+     * group (i.e. is the object effectively public-read)?
+     */
+    protected function _acl_grants_public_read($acl) {
+      foreach ($acl['Grants'] as $grant) {
+        if (!empty($grant['Grantee']['URI']) && strpos($grant['Grantee']['URI'], '/groups/global/AllUsers') !== FALSE) {
+          return TRUE;
+        }
+      }
+      return FALSE;
     }
 
     /**
@@ -121,24 +297,93 @@ else {
       // This is here, rather than the setUp() function, because we want the
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
-        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->s3_region}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
       $img_uri1 = "{$this->remote_tests_folder_uri}/test.png";
-      $img_localpath = drupal_get_path('module', 's3fs') . '/tests/test.png';
+      $img_localpath = backdrop_get_path('module', 's3fs') . '/tests/test.png';
 
       // Upload the test image.
-      $this->assertTrue(drupal_mkdir($this->remote_tests_folder_uri), 'Created the testing directory in the DB.');
+      $this->assertTrue(backdrop_mkdir($this->remote_tests_folder_uri), 'Created the testing directory in the DB.');
       $img_data = file_get_contents($img_localpath);
       $img_file = file_save_data($img_data, $img_uri1);
       $this->assertTrue($img_file, "Copied the the test image to $img_uri1.");
+      if (!$img_file) {
+        return;
+      }
 
       // Request a derivative.
       // Parse query parameters to ensure they get passed.
-      $style_url_parsed = drupal_parse_url(image_style_url('thumbnail', $img_uri1));
-      $derivative = $this->drupalGet($style_url_parsed['path'], array('query' => $style_url_parsed['query']));
+      $style_url_parsed = backdrop_parse_url(image_style_url('thumbnail', $img_uri1));
+      $derivative = $this->backdropGet($style_url_parsed['path'], array('query' => $style_url_parsed['query']));
       $this->assertTrue(imagecreatefromstring($derivative), 'The returned derivative is a valid image.');
+    }
+
+    /**
+     * Test adding and removing an image from a node.
+     */
+    public function testNodeImageAddAndRemove() {
+      if ($this->bucket_not_found) {
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region.");
+        return;
+      }
+
+      $field_name = 'field_s3fs_test_image';
+      field_create_field(array(
+        'field_name' => $field_name,
+        'type' => 'image',
+        'cardinality' => 1,
+      ));
+      field_create_instance(array(
+        'field_name' => $field_name,
+        'entity_type' => 'node',
+        'bundle' => 'page',
+        'label' => 'S3fs test image',
+        'required' => FALSE,
+      ));
+
+      $this->assertTrue(backdrop_mkdir($this->remote_tests_folder_uri), 'Created the node image test directory in S3.');
+      $image_uri = "{$this->remote_tests_folder_uri}/node-image.png";
+      $image = file_save_data(
+        file_get_contents(backdrop_get_path('module', 's3fs') . '/tests/test.png'),
+        $image_uri,
+        FILE_EXISTS_REPLACE
+      );
+      $this->assertTrue($image, 'Uploaded the node image to S3.');
+      if (!$image) {
+        return;
+      }
+      $image->status = FILE_STATUS_PERMANENT;
+      file_save($image);
+
+      $node = $this->backdropCreateNode(array(
+        'type' => 'page',
+        'title' => 'S3fs image test',
+      ));
+      $node->{$field_name}[LANGUAGE_NONE][0] = array(
+        'fid' => $image->fid,
+        'alt' => 'S3fs test image',
+      );
+      node_save($node);
+
+      $saved_node = node_load($node->nid, NULL, TRUE);
+      $this->assertEqual(
+        $saved_node->{$field_name}[LANGUAGE_NONE][0]['fid'],
+        $image->fid,
+        'The image is attached to the node.'
+      );
+
+      $saved_node->{$field_name}[LANGUAGE_NONE] = array();
+      node_save($saved_node);
+      $saved_node = node_load($node->nid, NULL, TRUE);
+      $this->assertTrue(
+        empty($saved_node->{$field_name}[LANGUAGE_NONE]),
+        'The image can be removed from the node.'
+      );
+
+      file_delete($image->fid);
+      node_delete($node->nid);
     }
 
     /**
@@ -148,8 +393,8 @@ else {
       // This is here, rather than the setUp() function, because we want the
       // test to immediately exit if this happens.
       if ($this->bucket_not_found) {
-        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->s3_region}' region on your AWS account.
-          Either edit the protected properties of the S3fsTests class, or create a bucket called 's3fs-testing-bucket' in the 'us-east-1' region.");
+        $this->fail("The '{$this->config['bucket']}' bucket does not exist in the '{$this->config['region']}' region on your AWS account.
+          Please configure S3 File System with an existing bucket in the configured region.");
         return;
       }
 
@@ -167,9 +412,10 @@ else {
         );
       }
 
-      $config = _s3fs_get_config();
-      // Set the current test folder as the root prefix.
-      $config['root_folder'] = $this->remote_tests_folder_key;
+      // _s3fs_refresh_cache() reads its settings from config, so set the
+      // current test folder as the root prefix there.
+      $config = config('s3fs.settings');
+      $config->set('s3fs_root_folder', $this->remote_tests_folder_key)->save();
       _s3fs_refresh_cache($config);
 
       // Query the DB to confirm that all the new files are cached.
@@ -186,7 +432,7 @@ else {
       // Flush the cache, then do a refresh using the root_folder setting.
       // Only the file in the root folder (test3.txt) should become cached.
       $delete_query = db_delete('s3fs_file')->execute();
-      $config['root_folder'] = $this->remote_tests_folder_key . '/parts';
+      $config->set('s3fs_root_folder', $this->remote_tests_folder_key . '/parts')->save();
       _s3fs_refresh_cache($config);
 
       // Confirm that only the file in the "parts" folder was cached.
@@ -203,8 +449,9 @@ else {
      * Clean up S3 folder.
      */
     public function tearDown() {
-      $this->s3->deleteMatchingObjects($this->config['bucket'], $this->remote_tests_folder_key);
+      if ($this->s3 && !empty($this->config['bucket'])) {
+        $this->s3->deleteMatchingObjects($this->config['bucket'], $this->remote_tests_folder_key);
+      }
       parent::tearDown();
     }
-  } // END S3fsTests class
-}
+} // END S3fsTests class

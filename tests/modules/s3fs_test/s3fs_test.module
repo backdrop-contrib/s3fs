@@ -1,0 +1,19 @@
+<?php
+
+/**
+ * @file
+ * Support module for S3 File System tests.
+ */
+
+/**
+ * Implements hook_s3fs_upload_params_alter().
+ *
+ * Adds per-file parameters to uploads whose key contains "hook_tagged", so
+ * tests can check they don't carry over onto later, unrelated uploads.
+ */
+function s3fs_test_s3fs_upload_params_alter(&$upload_params) {
+  if (strpos($upload_params['Key'], 'hook_tagged') !== FALSE) {
+    $upload_params['CacheControl'] = 'public, max-age=31536000';
+    $upload_params['Metadata'] = array('s3fs-test' => 'hook_tagged');
+  }
+}
