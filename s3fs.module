@@ -306,7 +306,7 @@ function _s3fs_image_style_deliver($style, $scheme) {
 
   if ($success) {
     image_style_remove_allowed_uri($derivative_uri);
-    if ($config->get('s3fs_no_redirect_derivatives', FALSE)) {
+    if ($config->get('s3fs_no_redirect_derivatives')) {
       // If the site admin doesn't want us to redirect to the new derivative, we upload it to the client, instead.
       $image = image_load($derivative_uri);
       $settings = [

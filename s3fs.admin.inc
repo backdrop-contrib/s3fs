@@ -394,7 +394,7 @@ if (module_exists('key')) {
   $form['advanced']['s3fs_additional_folders']['s3fs_public_folder'] = array(
     '#type' => 'textfield',
     '#title' => t('Public Folder'),
-    '#default_value' => $config->get('s3fs_public_folder', 's3fs-public'),
+    '#default_value' => $config->get('s3fs_public_folder') ?: 's3fs-public',
     '#description' => t(
       'The name of the folder in your bucket (or within the root folder) where public:// files will be stored.'
     ),
@@ -403,7 +403,7 @@ if (module_exists('key')) {
   $form['advanced']['s3fs_additional_folders']['s3fs_private_folder'] = array(
     '#type' => 'textfield',
     '#title' => t('Private Folder'),
-    '#default_value' => $config->get('s3fs_private_folder', 's3fs-private'),
+    '#default_value' => $config->get('s3fs_private_folder') ?: 's3fs-private',
     '#description' => t(
       'The name of the folder in your bucket (or within the root folder) where private:// files will be stored.'
     ),

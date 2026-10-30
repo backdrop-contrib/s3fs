@@ -42,9 +42,9 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
   /**
    * Module configuration for stream.
    *
-   * @var array
+   * @var Config
    */
-  private $config = array();
+  private $config;
 
   /**
    * Mode in which the stream was opened.
@@ -447,28 +447,24 @@ class S3fsStreamWrapper extends StreamWrapper implements BackdropStreamWrapperIn
 
     if (empty($this->config->get('s3fs_use_cname'))) {
       // We're not using a CNAME, so we ask S3 for the URL.
-      $expires = NULL;
-      if ($url_settings['presigned_url']) {
-        $expires = "+{$url_settings['timeout']} seconds";
-      }
-      else {
-        // Due to Amazon's security policies (see Request Parameters section @
-        // http://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectGET.html),
-        // only signed requests can use request parameters.
-        // Thus, we must provide an expiry time for any URLs which specify
-        // Response* API args. Currently, this only includes "Forced Save As".
-        foreach ($url_settings['api_args'] as $key => $arg) {
-          if (strpos($key, 'Response') === 0) {
-            $expires = "+10 years";
-            break;
-          }
+      // Due to Amazon's security policies (see Request Parameters section @
+      // http://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectGET.html),
+      // only signed requests can use request parameters.
+      // Thus, we must provide an expiry time for any URLs which specify
+      // Response* API args. Currently, this only includes "Forced Save As".
+      $response_args = array();
+      foreach ($url_settings['api_args'] as $key => $arg) {
+        if (strpos($key, 'Response') === 0) {
+          $response_args[$key] = $arg;
         }
       }
-      if ($url_settings['presigned_url']) {
+      if ($url_settings['presigned_url'] || $response_args) {
+        // Signature Version 4 caps a presigned URL at seven days.
+        $expires = $url_settings['presigned_url'] ? "+{$url_settings['timeout']} seconds" : '+7 days';
         $cmd = $this->s3->getCommand('GetObject', array(
           'Bucket' => $this->config->get('s3fs_bucket'),
           'Key' => $s3_key,
-        ));
+        ) + $response_args);
         $external_url = (string) $this->s3->createPresignedRequest($cmd, $expires)->getUri();
       }
       else {
