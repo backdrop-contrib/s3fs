@@ -273,7 +273,7 @@ function _s3fs_image_style_deliver($style, $scheme) {
 
 
   if ($success) {
-    if ($config->get('s3fs_no_redirect_derivatives', FALSE)) {
+    if ($config->get('s3fs_no_redirect_derivatives')) {
       // If the site admin doesn't want us to redirect to the new derivative, we upload it to the client, instead.
       $image = image_load($derivative_uri);
       $settings = [
@@ -449,8 +449,8 @@ function _s3fs_refresh_cache($config) {
   $s3fs_config = config('s3fs.settings');
   $bucket = $s3fs_config->get('s3fs_bucket');
   $root_folder = $s3fs_config->get('s3fs_root_folder');
-  $public_folder_name = $s3fs_config->get('s3fs_public_folder', 's3fs-public');
-  $private_folder_name = $s3fs_config->get('s3fs_private_folder', 's3fs-private');
+  $public_folder_name = $s3fs_config->get('s3fs_public_folder') ?: 's3fs-public';
+  $private_folder_name = $s3fs_config->get('s3fs_private_folder') ?: 's3fs-private';
   $use_versioning = $s3fs_config->get('s3fs_use_versioning');
 
   $iterator_args = ['Bucket' => $bucket];
