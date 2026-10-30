@@ -3,7 +3,6 @@
  * @file
  * Administration form setup for S3 File System.
  */
-use Aws\Api;
 /**
  * Builds the Settings form.
  */

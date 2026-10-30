@@ -13,9 +13,7 @@ at https://docs.backdropcms.org/documentation/extend-with-modules.
 
 Visit the configuration page under Administration > Configuration > Media > s3fs (admin/config/media/s3fs) and enter the required information.
 
-IN CASE OF TROUBLE DETECTING THE AWS SDK LIBRARY:
-
-Ensure that the awssdk folder itself, and all the files within it, can be read by your webserver. Usually this means that the user "apache" (or "_www" on OSX) must have read permissions for the files, and read+execute permissions for all the folders in the path leading to the awssdk files.
+S3 File System connects to S3 through the AWS Connect module, which signs and sends the requests. PHP needs the curl extension and allow_url_fopen. Until AWS Connect is enabled, the module falls back to the bundled AWS SDK for PHP in vendor/. That fallback is deprecated and will be removed in the next major release, which requires AWS Connect.
 
 ## Initial Setup
 
@@ -23,9 +21,7 @@ Ensure that the awssdk folder itself, and all the files within it, can be read b
 
 With the code installation complete, you must now configure s3fs to use your Amazon Web Services credentials.
 
-The preferred method is to use environment variables or IAM credentials as outlined
-
-here: https://docs.aws.amazon.com/aws-sdk-php/v3/guide/guide/credentials.html
+The preferred method is to use environment variables, the shared credentials file, or IAM role credentials (EC2 instance profile, ECS task role or EKS Pod Identity). When no keys are configured, these are tried in that order.
 
 Configure your settings for S3 File System (including your S3 bucket name) at admin/config/media/s3fs/settings.  Add the AWS keys either in settings.php or use the Key module.
 
@@ -166,9 +162,7 @@ http://dev.soup.io/post/56438473/If-youre-using-MAMP-and-doing-something
 
 Because of a bizarre limitation regarding MySQL's maximum index length for InnoDB tables, the maximum uri length that S3FS supports is 250 characters. That includes the full path to the file in your bucket, as the full folder path is part of the uri.
 
-eAccelerator, a deprecated opcode cache plugin for PHP, is incompatible with AWS SDK for PHP. eAccelerator will corrupt the configuration settings for the SDK's s3 client object, causing a variety of different exceptions to be thrown. If your server uses eAccelerator, it is highly recommended that you replace it with a different opcode cache plugin, as its development was abandoned several years ago.
-
-For s3fs 7.x-3.x, the most current supported version of AWS SDK is v3.156.0, which can be downloaded above. This is due to an [open issue](https://www.drupal.org/project/s3fs/issues/3194400).
+Uploads are sent as a single PutObject request, so objects are limited to 5 GB.
 
 ## Differences from Drupal 7
 
@@ -209,8 +203,6 @@ Bugs and feature requests should be reported in [the Issue Queue](https://github
 -------
 
 This project is GPL v2 software. See the LICENSE.txt file in this directory for complete text.
-
-The AWS SDK library for PHP is licensed under an Apache License.
 
 ## Acknowledgements
 

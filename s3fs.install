@@ -5,8 +5,6 @@
  * Install, update and uninstall functions for the S3 File System module.
  */
 
-use Aws\Sdk;
-
 /**
  * Implements hook_requirements().
  */
@@ -49,142 +47,21 @@ function s3fs_requirements($phase) {
     );
   }
 
-  // Check if Composer Manager module exists.
-  if (module_exists('composer_manager')) {
-    if (class_exists('Aws\\Sdk')) {
-      // Try to detect the AWS SDK version.
-      $version = NULL;
-      // Prefer the class constant when available (SDK v3 defines VERSION).
-      if (defined('Aws\\Sdk::VERSION')) {
-        $version = constant('Aws\\Sdk::VERSION');
-      }
-      // Fallback to Composer InstalledVersions (Composer 2+), if present.
-      if (!$version && class_exists('Composer\\InstalledVersions') && method_exists('Composer\\InstalledVersions', 'getPrettyVersion')) {
-        try {
-          $version = Composer\InstalledVersions::getPrettyVersion('aws/aws-sdk-php');
-        }
-        catch (Exception $e) {
-          // Ignore and leave version unknown.
-        }
-      }
-      $version_text = $version ? t('Installed @ v@version.', array('@version' => $version)) : t('AWS SDK is installed (version unknown).');
-      $requirements['s3fs_awssdk'] = array(
-        'title' => $t('AWS SDK for PHP'),
-        'value' => $version_text,
-        'severity' => REQUIREMENT_OK,
-      );
-    }
-    else {
-      $requirements['s3fs_awssdk'] = array(
-        'title' => $t('AWS SDK for PHP'),
-        'value' => $t('The S3 File System module requires the AWS SDK for PHP v3.x library.'),
-        'description' => $t('The AWS SDK could not be loaded.'),
-        'severity' => REQUIREMENT_ERROR,
-      );
-    }
+  if (module_exists('aws_connect')) {
+    $requirements['s3fs_connection'] = array(
+      'title' => $t('S3 File System connection'),
+      'value' => $t('AWS Connect'),
+      'severity' => REQUIREMENT_OK,
+    );
   }
-  // Check if Libraries module exists.
-  elseif (module_exists('libraries')) {
-    $library = libraries_detect('awssdk');
-    if ($library && !empty($library['installed']) && version_compare($library['version'], '3') >= 0) {
-      $requirements['s3fs_awssdk'] = array(
-        'title' => $t('AWS SDK for PHP'),
-        'value' => $t('Installed @ v@version.', array('@version' => $library['version'])),
-        'severity' => REQUIREMENT_OK,
-      );
-    }
-    else {
-      // Libraries module did not provide a usable awssdk. As a fallback, try
-      // the module's bundled vendor directory before reporting an error.
-      $autoload = BACKDROP_ROOT . '/' . backdrop_get_path('module', 's3fs') . '/vendor/autoload.php';
-      $loaded_from_module_vendor = FALSE;
-      if (file_exists($autoload)) {
-        require_once $autoload;
-        $loaded_from_module_vendor = TRUE;
-      }
-
-      if (class_exists('Aws\\Sdk')) {
-        // Detect version.
-        $version = NULL;
-        if (defined('Aws\\Sdk::VERSION')) {
-          $version = constant('Aws\\Sdk::VERSION');
-        }
-        if (!$version && class_exists('Composer\\InstalledVersions') && method_exists('Composer\\InstalledVersions', 'getPrettyVersion')) {
-          try {
-            $version = Composer\InstalledVersions::getPrettyVersion('aws/aws-sdk-php');
-          }
-          catch (Exception $e) {
-            // Ignore.
-          }
-        }
-        $version_text = $version ? t('Installed @ v@version.', array('@version' => $version)) : t('AWS SDK is installed (version unknown).');
-        $source = $loaded_from_module_vendor ? t('Module vendor/autoload.php') : t('Unknown source');
-        $requirements['s3fs_awssdk'] = array(
-          'title' => $t('AWS SDK for PHP'),
-          'value' => $version_text,
-          'description' => t('Loaded via: @source', array('@source' => $source)),
-          'severity' => REQUIREMENT_OK,
-        );
-      }
-      else {
-        $requirements['s3fs_awssdk'] = array(
-          'title' => $t('AWS SDK for PHP'),
-          'value' => $t('The S3 File System module requires the AWS SDK for PHP v3.x library.'),
-          'description' => $t('The Libraries module reported the following error: !error_message<br>
-          Please check the installation instructions for S3 File System.',
-            array('!error_message' => isset($library['error message']) ? filter_xss($library['error message']) : $t('Unknown error'))
-          ),
-          'severity' => REQUIREMENT_ERROR,
-        );
-      }
-    }
-  }
-  // If neither Composer Manager nor Libraries exist, try the module's own vendor.
   else {
-    $autoload = BACKDROP_ROOT . '/' . backdrop_get_path('module', 's3fs') . '/vendor/autoload.php';
-    $loaded_from_module_vendor = FALSE;
-    if (file_exists($autoload)) {
-      require_once $autoload;
-      $loaded_from_module_vendor = TRUE;
-    }
-
-    if (class_exists('Aws\\Sdk')) {
-      // Detect version.
-      $version = NULL;
-      if (defined('Aws\\Sdk::VERSION')) {
-        $version = constant('Aws\\Sdk::VERSION');
-      }
-      if (!$version && class_exists('Composer\\InstalledVersions') && method_exists('Composer\\InstalledVersions', 'getPrettyVersion')) {
-        try {
-          $version = Composer\InstalledVersions::getPrettyVersion('aws/aws-sdk-php');
-        }
-        catch (Exception $e) {
-          // Ignore.
-        }
-      }
-      $version_text = $version ? t('Installed @ v@version.', array('@version' => $version)) : t('AWS SDK is installed (version unknown).');
-      $source = $loaded_from_module_vendor ? t('Module vendor/autoload.php') : t('Unknown source');
-      $requirements['s3fs_awssdk'] = array(
-        'title' => $t('AWS SDK for PHP'),
-        'value' => $version_text,
-        'description' => t('Loaded via: @source', array('@source' => $source)),
-        'severity' => REQUIREMENT_OK,
-      );
-    }
-    else {
-      $requirements['s3fs_awssdk_manager'] = array(
-        'title' => $t('S3FS AWS SDK Management Tool'),
-        'value' => $t('Not installed.'),
-        'description' => $t('S3 File System requires either the Composer Manager or Libraries
-        module to manage the AWS SDK. Please install !composer_manager or !libraries.',
-          array(
-            '!composer_manager' => l('Composer Manager', 'http://www.drupal.org/project/composer_manager'),
-            '!libraries' => l('Libraries', 'http://www.drupal.org/project/libraries'),
-          )
-        ),
-        'severity' => REQUIREMENT_ERROR,
-      );
-    }
+    $library = _s3fs_load_awssdk_library();
+    $requirements['s3fs_connection'] = array(
+      'title' => $t('S3 File System connection'),
+      'value' => $library['loaded'] ? $t('Bundled AWS SDK for PHP (deprecated)') : $t('None'),
+      'description' => $t('S3 File System now connects to S3 through the <a href="@url">AWS Connect</a> module. The bundled AWS SDK for PHP is deprecated and will be removed in the next major release, which requires AWS Connect. Add and enable AWS Connect now; no configuration is needed.', array('@url' => 'https://backdropcms.org/project/aws_connect')),
+      'severity' => $library['loaded'] ? REQUIREMENT_WARNING : REQUIREMENT_ERROR,
+    );
   }
 
   if (function_exists('_s3fs_get_setting') && _s3fs_get_setting('use_instance_profile')) {
@@ -204,38 +81,6 @@ function s3fs_requirements($phase) {
       $message['severity'] = REQUIREMENT_INFO;
     }
     $requirements['s3fs_credentials_file_status'] = $message;
-  }
-
-  // Diagnostics: show where the AWS SDK was loaded from and which classes are in use.
-  if (class_exists('Aws\\Sdk')) {
-    $sdk_source = function_exists('s3fs_get_sdk_source') ? s3fs_get_sdk_source() : 'Unknown';
-    // Determine file paths for core AWS classes to see which vendor provided them.
-    try {
-      $sdk_ref = new ReflectionClass('Aws\\Sdk');
-      $sdk_file = $sdk_ref->getFileName();
-    }
-    catch (Exception $e) {
-      $sdk_file = t('Unknown');
-    }
-    try {
-      if (class_exists('Aws\\S3\\StreamWrapper')) {
-        $sw_ref = new ReflectionClass('Aws\\S3\\StreamWrapper');
-        $aws_sw_file = $sw_ref->getFileName();
-      }
-      else {
-        $aws_sw_file = t('Class not found');
-      }
-    }
-    catch (Exception $e) {
-      $aws_sw_file = t('Unknown');
-    }
-
-    $requirements['s3fs_sdk_source'] = array(
-      'title' => $t('AWS SDK load source'),
-      'value' => t('@source (@file)', array('@source' => $sdk_source, '@file' => $sdk_file)),
-      'description' => t('AWS S3 StreamWrapper file: @file', array('@file' => $aws_sw_file)),
-      'severity' => REQUIREMENT_INFO,
-    );
   }
 
   // Show the Backdrop stream wrapper class handling s3://.
@@ -413,3 +258,17 @@ function s3fs_update_1000() {
   update_variable_del('s3fs_torrents');
 }
 
+/**
+ * Enable the AWS Connect module, if present, to replace the bundled AWS SDK.
+ */
+function s3fs_update_1001() {
+  if (module_exists('aws_connect')) {
+    return;
+  }
+  // AWS Connect may not be on disk yet; the bundled SDK keeps working until
+  // it is, and the status report warns about the deprecation.
+  if (module_enable(array('aws_connect'))) {
+    return t('Enabled the AWS Connect module.');
+  }
+  return t('AWS Connect was not found, so S3 File System still uses the deprecated bundled AWS SDK. Add AWS Connect before the next major release, which requires it.');
+}

@@ -57,10 +57,9 @@ class S3fsTests extends BackdropWebTestCase {
       if (!empty($this->config['root_folder'])) {
         $this->remote_tests_folder_key = "{$this->config['root_folder']}/$this->remote_tests_folder";
       }
-      // Use the non-deprecated V2 existence check supported by AWS SDK v3.
-      $this->bucket_not_found = !$this->s3->doesBucketExistV2($this->config['bucket']);
+      $this->bucket_not_found = !$this->s3->bucketExists();
       if (!$this->bucket_not_found) {
-        $this->s3->deleteMatchingObjects($this->config['bucket'], $this->remote_tests_folder_key);
+        $this->s3->deleteMatchingObjects($this->remote_tests_folder_key);
         debug("Deleted file(s) from S3 test folder to prepare for the test.");
       }
     }
@@ -163,12 +162,7 @@ class S3fsTests extends BackdropWebTestCase {
       $to_uri = "private://{$rel_path}";
 
       // Seed the source object directly in S3.
-      $this->s3->putObject(array(
-        'Bucket' => $this->config['bucket'],
-        'Key' => $public_key,
-        'Body' => 'acl regression test',
-        'ACL' => 'public-read',
-      ));
+      $this->s3->putObject($public_key, 'acl regression test', array('ACL' => 'public-read'));
 
       // Use the process-wide default context, and prime it with a stale ACL
       // the way stream_flush() leaves it after an earlier public write, to
@@ -183,7 +177,7 @@ class S3fsTests extends BackdropWebTestCase {
         // Cross-scheme rename: public -> private. Must end up private even
         // though the stale context ACL is 'public-read'.
         $this->assertTrue($wrapper->rename($from_uri, $to_uri), 'Renamed the public file to a private destination.');
-        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+        $acl = $this->s3->getObjectAcl($private_key);
         $this->assertFalse($this->_acl_grants_public_read($acl), 'The public-to-private rename produced a private ACL, not public-read.');
 
         // Prime the context with a stale 'private' ACL before renaming back,
@@ -193,7 +187,7 @@ class S3fsTests extends BackdropWebTestCase {
         // Cross-scheme rename: private -> public. Must end up public-read
         // even though the stale context ACL is 'private'.
         $this->assertTrue($wrapper->rename($to_uri, $from_uri), 'Renamed the private file back to a public destination.');
-        $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $public_key));
+        $acl = $this->s3->getObjectAcl($public_key);
         $this->assertTrue($this->_acl_grants_public_read($acl), 'The private-to-public rename produced a public-read ACL.');
       }
       catch (\Exception $e) {
@@ -203,8 +197,8 @@ class S3fsTests extends BackdropWebTestCase {
       // Clean up. These objects live outside remote_tests_folder_key (which
       // only covers the s3:// scheme's key layout), so they need explicit
       // removal here rather than relying on tearDown().
-      $this->s3->deleteMatchingObjects($this->config['bucket'], $public_key);
-      $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+      $this->s3->deleteObject($public_key);
+      $this->s3->deleteObject($private_key);
     }
 
     /**
@@ -236,7 +230,7 @@ class S3fsTests extends BackdropWebTestCase {
       unset($default_before['s3']['client'], $default_before['s3']['cache'], $default_after['s3']['client'], $default_after['s3']['cache']);
       $this->assertIdentical($default_after, $default_before, 'Uploads did not write any parameters to the default stream context.');
 
-      $head = $this->s3->headObject(array('Bucket' => $this->config['bucket'], 'Key' => $plain_key));
+      $head = $this->s3->headObject($plain_key);
       $this->assertTrue(empty($head['Metadata']['s3fs-test']), 'Hook-set Metadata did not carry over to the plain file.');
       if (empty($this->config['cache_control_header'])) {
         // With no configured header, s3fs never sets Cache-Control itself, so
@@ -254,13 +248,13 @@ class S3fsTests extends BackdropWebTestCase {
         $this->assertTrue(file_put_contents("s3://{$this->remote_tests_folder}/public_first.txt", 'public') !== FALSE, 'Uploaded a public-read file first.');
         $this->assertEqual(file_stream_wrapper_get_class('private'), 'S3fsStreamWrapper', 'private:// is handled by S3fsStreamWrapper.');
         if ($this->assertTrue(file_put_contents("private://{$rel_path}", 'private') !== FALSE, 'Uploaded a private file afterwards.')) {
-          $acl = $this->s3->getObjectAcl(array('Bucket' => $this->config['bucket'], 'Key' => $private_key));
+          $acl = $this->s3->getObjectAcl($private_key);
           $this->assertFalse($this->_acl_grants_public_read($acl), 'The private upload did not inherit public-read from the earlier upload.');
         }
 
         // This object lives outside remote_tests_folder_key, so tearDown()
         // won't remove it.
-        $this->s3->deleteMatchingObjects($this->config['bucket'], $private_key);
+        $this->s3->deleteObject($private_key);
       }
     }
 
@@ -385,18 +379,12 @@ class S3fsTests extends BackdropWebTestCase {
         return;
       }
 
-      // Add several files to the bucket using the AWS SDK directly, so that
+      // Add several files to the bucket with the S3 client directly, so that
       // s3fs won't cache them.
       $filenames = array('files/test2.txt', 'parts/test3.txt', 'test.txt', );
       foreach ($filenames as $filename) {
         $filename = $this->remote_tests_folder_key . '/' . $filename;
-        $this->s3->putObject(
-          array(
-            'Bucket' => $this->config['bucket'],
-            'Key' => $filename,
-            'ACL' => 'public-read',
-          )
-        );
+        $this->s3->putObject($filename, '', array('ACL' => 'public-read'));
       }
 
       $config = _s3fs_get_config();
@@ -436,7 +424,7 @@ class S3fsTests extends BackdropWebTestCase {
      */
     public function tearDown() {
       if ($this->s3 && !empty($this->config['bucket'])) {
-        $this->s3->deleteMatchingObjects($this->config['bucket'], $this->remote_tests_folder_key);
+        $this->s3->deleteMatchingObjects($this->remote_tests_folder_key);
       }
       parent::tearDown();
     }
